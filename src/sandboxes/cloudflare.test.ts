@@ -245,6 +245,67 @@ describe("cloudflare provider", () => {
     expect(await readFile(dest, "utf8")).toBe("file-contents");
   });
 
+  it("stages a copy-in bound for outside /workspace and moves it into place", async () => {
+    const { mkdtemp, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = await mkdtemp(join(tmpdir(), "cf-sandbox-test-"));
+    const src = join(dir, "repo.bundle");
+    await writeFile(src, "bundle-bytes");
+
+    const bridge = fakeBridge();
+    const handle = await makeProvider(bridge).create({ env: {} });
+    bridge.calls.length = 0;
+
+    // Sandcastle's sync-in lands the bundle under `mktemp -d`, i.e. /tmp,
+    // which the bridge's file routes refuse.
+    await handle.copyIn(src, "/tmp/sandcastle-abc123/repo.bundle");
+
+    const put = bridge.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toMatch(
+      /\/v1\/sandbox\/sb-123\/file\/workspace\/\.sandcastle-stage\/[0-9a-f-]+$/,
+    );
+
+    const scripts = bridge.calls
+      .filter((c) => c.url.endsWith("/exec"))
+      .map((c) => JSON.parse(c.body ?? "{}").argv[2] as string);
+    expect(scripts[0]).toBe("mkdir -p '/workspace/.sandcastle-stage'");
+    expect(scripts[1]).toMatch(
+      /^mkdir -p '\/tmp\/sandcastle-abc123' && mv '\/workspace\/\.sandcastle-stage\/[0-9a-f-]+' '\/tmp\/sandcastle-abc123\/repo\.bundle'$/,
+    );
+  });
+
+  it("reads a file outside /workspace by staging it inside first", async () => {
+    const { mkdtemp, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = await mkdtemp(join(tmpdir(), "cf-sandbox-test-"));
+    const bridge = fakeBridge();
+    const handle = await makeProvider(bridge).create({ env: {} });
+    bridge.calls.length = 0;
+
+    const dest = join(dir, "0001.patch");
+    await handle.copyFileOut("/tmp/sandcastle-patches-xyz/0001.patch", dest);
+    expect(await readFile(dest, "utf8")).toBe("file-contents");
+
+    const scripts = bridge.calls
+      .filter((c) => c.url.endsWith("/exec"))
+      .map((c) => JSON.parse(c.body ?? "{}").argv[2] as string);
+    expect(scripts[0]).toMatch(
+      /^mkdir -p '\/workspace\/\.sandcastle-stage' && cp '\/tmp\/sandcastle-patches-xyz\/0001\.patch' '\/workspace\/\.sandcastle-stage\/[0-9a-f-]+'$/,
+    );
+    const get = bridge.calls.find((c) => c.method === "GET");
+    expect(get?.url).toMatch(
+      /\/v1\/sandbox\/sb-123\/file\/workspace\/\.sandcastle-stage\/[0-9a-f-]+$/,
+    );
+    // The staged copy must not outlive the read.
+    expect(scripts[1]).toMatch(
+      /^rm -f '\/workspace\/\.sandcastle-stage\/[0-9a-f-]+'$/,
+    );
+  });
+
   it("destroys the sandbox on close", async () => {
     const bridge = fakeBridge();
     const handle = await makeProvider(bridge).create({ env: {} });
