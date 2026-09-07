@@ -23,6 +23,7 @@ Sandcastle is provider-agnostic — it ships with built-in providers for Docker,
   - [Docker Desktop](https://www.docker.com/) — most common for local development
   - [Podman](https://podman.io/) — rootless alternative to Docker
   - [Vercel](https://vercel.com/) — cloud-based Firecracker microVMs via `@vercel/sandbox`
+  - [Cloudflare](https://developers.cloudflare.com/sandbox/) — cloud containers via a self-deployed [sandbox bridge](https://developers.cloudflare.com/sandbox/bridge/) Worker
   - Or [create your own](#custom-sandbox-providers) using `createBindMountSandboxProvider` or `createIsolatedSandboxProvider`
 
 ## Quick start

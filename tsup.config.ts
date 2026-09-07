@@ -13,6 +13,7 @@ export default defineConfig({
     "sandboxes/podman": "src/sandboxes/podman.ts",
     "sandboxes/vercel": "src/sandboxes/vercel.ts",
     "sandboxes/daytona": "src/sandboxes/daytona.ts",
+    "sandboxes/cloudflare": "src/sandboxes/cloudflare.ts",
     "sandboxes/no-sandbox": "src/sandboxes/no-sandbox.ts",
   },
   format: ["esm"],
