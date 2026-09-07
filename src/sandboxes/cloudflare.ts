@@ -73,6 +73,19 @@ const shellEscape = (value: string): string =>
 const filePathToUrlSuffix = (sandboxPath: string): string =>
   sandboxPath.replace(/^\/+/, "");
 
+/**
+ * The bridge's `/file/*` routes refuse any path outside this tree with a 403.
+ * Sandcastle's sync steps stage bundles and patches under `mktemp -d`, which
+ * lands in `/tmp`, so files bound for anywhere else are landed in
+ * {@link STAGE_DIR} and moved into place with a shell command.
+ */
+const WORKSPACE_ROOT = "/workspace";
+const STAGE_DIR = `${WORKSPACE_ROOT}/.sandcastle-stage`;
+
+const isUnderWorkspace = (sandboxPath: string): boolean =>
+  sandboxPath === WORKSPACE_ROOT ||
+  sandboxPath.startsWith(`${WORKSPACE_ROOT}/`);
+
 interface SseHandlers {
   onStdout?: (text: string) => void;
   onStderr?: (text: string) => void;
@@ -299,7 +312,7 @@ export const cloudflare = (
         };
       };
 
-      const writeSandboxFile = async (
+      const putFile = async (
         sandboxPath: string,
         contents: string | Uint8Array,
       ): Promise<void> => {
@@ -314,6 +327,68 @@ export const cloudflare = (
             body: contents as RequestInit["body"],
           },
         );
+      };
+
+      const getFile = async (sandboxPath: string): Promise<ArrayBuffer> => {
+        const response = await request(
+          `/v1/sandbox/${sandboxId}/file/${filePathToUrlSuffix(sandboxPath)}`,
+          { headers: sessionHeaders },
+        );
+        return response.arrayBuffer();
+      };
+
+      const stagePath = (): string => `${STAGE_DIR}/${crypto.randomUUID()}`;
+
+      const execOrThrow = async (
+        script: string,
+        what: string,
+      ): Promise<void> => {
+        const result = await execRaw(script, WORKSPACE_ROOT);
+        if (result.exitCode !== 0) {
+          throw new Error(
+            `Cloudflare sandbox bridge: ${what} failed (exit ${result.exitCode}): ${result.stderr}`.trim(),
+          );
+        }
+      };
+
+      const writeSandboxFile = async (
+        sandboxPath: string,
+        contents: string | Uint8Array,
+      ): Promise<void> => {
+        if (isUnderWorkspace(sandboxPath)) {
+          await putFile(sandboxPath, contents);
+          return;
+        }
+        const stage = stagePath();
+        await execOrThrow(
+          `mkdir -p ${shellEscape(STAGE_DIR)}`,
+          "creating the staging directory",
+        );
+        await putFile(stage, contents);
+        await execOrThrow(
+          `mkdir -p ${shellEscape(posix.dirname(sandboxPath))} && mv ${shellEscape(stage)} ${shellEscape(sandboxPath)}`,
+          `moving a staged file to ${sandboxPath}`,
+        );
+      };
+
+      const readSandboxFile = async (
+        sandboxPath: string,
+      ): Promise<ArrayBuffer> => {
+        if (isUnderWorkspace(sandboxPath)) {
+          return getFile(sandboxPath);
+        }
+        const stage = stagePath();
+        await execOrThrow(
+          `mkdir -p ${shellEscape(STAGE_DIR)} && cp ${shellEscape(sandboxPath)} ${shellEscape(stage)}`,
+          `staging ${sandboxPath} for reading`,
+        );
+        try {
+          return await getFile(stage);
+        } finally {
+          await execRaw(`rm -f ${shellEscape(stage)}`, WORKSPACE_ROOT).catch(
+            () => {},
+          );
+        }
       };
 
       await execRaw(`mkdir -p ${shellEscape(worktreePath)}`, "/workspace");
@@ -340,11 +415,15 @@ export const cloudflare = (
             return execRaw(base, cwd, opts?.onLine);
           }
 
-          const stdinPath = posix.join(
-            worktreePath,
-            `.sandcastle-stdin-${crypto.randomUUID()}`,
+          // The file lives in the staging directory, not the worktree: an
+          // agent that runs `git add -A` before the command exits would
+          // otherwise sweep it into its commit.
+          const stdinPath = stagePath();
+          await execOrThrow(
+            `mkdir -p ${shellEscape(STAGE_DIR)}`,
+            "creating the staging directory",
           );
-          await writeSandboxFile(stdinPath, opts.stdin);
+          await putFile(stdinPath, opts.stdin);
           try {
             return await execRaw(
               `${base} < ${shellEscape(stdinPath)}`,
@@ -354,7 +433,7 @@ export const cloudflare = (
           } finally {
             await execRaw(
               `rm -f ${shellEscape(stdinPath)}`,
-              worktreePath,
+              WORKSPACE_ROOT,
             ).catch(() => {});
           }
         },
@@ -391,12 +470,9 @@ export const cloudflare = (
           sandboxPath: string,
           hostPath: string,
         ): Promise<void> => {
-          const response = await request(
-            `/v1/sandbox/${sandboxId}/file/${filePathToUrlSuffix(sandboxPath)}`,
-            { headers: sessionHeaders },
-          );
+          const bytes = await readSandboxFile(sandboxPath);
           await mkdir(dirname(hostPath), { recursive: true });
-          await writeFile(hostPath, Buffer.from(await response.arrayBuffer()));
+          await writeFile(hostPath, Buffer.from(bytes));
         },
 
         close: async (): Promise<void> => {
