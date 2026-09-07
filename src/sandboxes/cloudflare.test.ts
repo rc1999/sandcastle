@@ -208,18 +208,25 @@ describe("cloudflare provider", () => {
 
     await handle.exec("pi -p", { stdin: "a very long prompt" });
 
+    // The prompt is staged outside the worktree so an agent's `git add -A`
+    // cannot sweep it into a commit.
     const put = bridge.calls.find((c) => c.method === "PUT");
     expect(put?.url).toMatch(
-      /\/v1\/sandbox\/sb-123\/file\/workspace\/repo\/\.sandcastle-stdin-/,
+      /\/v1\/sandbox\/sb-123\/file\/workspace\/\.sandcastle-stage\/[0-9a-f-]+$/,
     );
 
-    const execs = bridge.calls.filter((c) => c.url.endsWith("/exec"));
-    const script = JSON.parse(execs[0]?.body ?? "{}").argv[2] as string;
-    expect(script).toMatch(/^pi -p < '\/workspace\/repo\/\.sandcastle-stdin-/);
+    const scripts = bridge.calls
+      .filter((c) => c.url.endsWith("/exec"))
+      .map((c) => JSON.parse(c.body ?? "{}").argv[2] as string);
+    expect(scripts[0]).toBe("mkdir -p '/workspace/.sandcastle-stage'");
+    expect(scripts[1]).toMatch(
+      /^pi -p < '\/workspace\/\.sandcastle-stage\/[0-9a-f-]+'$/,
+    );
 
     // The staged file must not outlive the command.
-    const cleanup = JSON.parse(execs[1]?.body ?? "{}").argv[2] as string;
-    expect(cleanup).toMatch(/^rm -f '\/workspace\/repo\/\.sandcastle-stdin-/);
+    expect(scripts[2]).toMatch(
+      /^rm -f '\/workspace\/\.sandcastle-stage\/[0-9a-f-]+'$/,
+    );
   });
 
   it("copies a single file in and a file out", async () => {

@@ -415,11 +415,15 @@ export const cloudflare = (
             return execRaw(base, cwd, opts?.onLine);
           }
 
-          const stdinPath = posix.join(
-            worktreePath,
-            `.sandcastle-stdin-${crypto.randomUUID()}`,
+          // The file lives in the staging directory, not the worktree: an
+          // agent that runs `git add -A` before the command exits would
+          // otherwise sweep it into its commit.
+          const stdinPath = stagePath();
+          await execOrThrow(
+            `mkdir -p ${shellEscape(STAGE_DIR)}`,
+            "creating the staging directory",
           );
-          await writeSandboxFile(stdinPath, opts.stdin);
+          await putFile(stdinPath, opts.stdin);
           try {
             return await execRaw(
               `${base} < ${shellEscape(stdinPath)}`,
@@ -429,7 +433,7 @@ export const cloudflare = (
           } finally {
             await execRaw(
               `rm -f ${shellEscape(stdinPath)}`,
-              worktreePath,
+              WORKSPACE_ROOT,
             ).catch(() => {});
           }
         },
